@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 
 import fitz  # PyMuPDF
 
+from math_reconstructor import reconstruct_math
+
 try:
     import pytesseract
     from PIL import Image
@@ -228,6 +230,18 @@ def extract_page_text(page: "fitz.Page", page_number: int) -> PageExtractionResu
     Native first; OCR only if native quality is below threshold.
     """
     native_text = page.get_text()
+    # Mathematical-content cleanup/reconstruction — a dedicated stage that
+    # runs BEFORE boilerplate stripping/quality scoring and BEFORE parser.py
+    # ever sees the text. Uses the page's real geometry (drawn fraction
+    # bars, span fonts/sizes/positions) to repair PDF-extraction-level
+    # corruption (split fractions, decorative stretchy-parenthesis glyphs,
+    # scrambled decimal points, true superscripts/subscripts) that
+    # latex_processor.py has no way to recover from once flattened to
+    # plain text. See math_reconstructor.py's module docstring for why this
+    # exists and its confidence guarantees; it fails open (returns the
+    # input text unchanged) whenever it lacks confirming geometric
+    # evidence, so ordinary pages are unaffected.
+    native_text = reconstruct_math(page, native_text)
     native_clean = strip_boilerplate(native_text)
     score = compute_quality_score(native_clean)
 

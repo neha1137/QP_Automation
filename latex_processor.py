@@ -48,6 +48,7 @@ _SYMBOL_MAP = {
     "≥": r"\ge",
     "≠": r"\neq",
     "±": r"\pm",
+    "π": r"\pi",
 }
 _SYMBOL_CHARS = "".join(_SYMBOL_MAP)
 
@@ -79,13 +80,40 @@ def _existing_latex_ranges(text: str) -> list[tuple[int, int]]:
 
 _TOKEN_RE = re.compile(
     r"(?P<strong>"
-    r"[A-Za-z][ \t]*=[ \t]*-?\d+(?:\.\d+)?"          # x = 5
+    r"\\frac\{[^{}\n]{1,20}\}\{[^{}\n]{1,20}\}"       # \frac{22}{7} — a
+                                                        # fraction already
+                                                        # confirmed and
+                                                        # reconstructed
+                                                        # upstream (see
+                                                        # math_reconstructor.py)
+                                                        # from real PDF
+                                                        # geometry — never
+                                                        # produced by
+                                                        # guessing at flat
+                                                        # text here.
+    r"|[A-Za-z][ \t]*=[ \t]*-?\d+(?:\.\d+)?"          # x = 5
     r"|\d+(?:\.\d+)?[ \t]*=[ \t]*-?[A-Za-z]\b"        # 5 = x
     r"|√\([^()]{1,80}\)"                              # √(a^2 + b^2)
     r"|√[A-Za-z0-9]+(?:\.\d+)?"                       # √16, √x
+    r"|\([\d.\s+\-*/]{1,20}\)[" + _SUP_CHARS + r"]+"  # (3.5)² — a
+                                                        # geometrically-
+                                                        # confirmed exponent
+                                                        # right after a
+                                                        # parenthesized base.
+                                                        # Numeric-only
+                                                        # content class is
+                                                        # deliberate: it
+                                                        # must never be able
+                                                        # to swallow an
+                                                        # English phrase
+                                                        # like "(1st number
+                                                        # + 2)²" — only a
+                                                        # bare numeric
+                                                        # expression in
+                                                        # parens qualifies.
     r"|[A-Za-z0-9)\]][" + _SUP_CHARS + r"]+"          # x², 25³, )²
     r"|[A-Za-z0-9)\]][" + _SUB_CHARS + r"]+"          # a₁
-    r"|[ \t]*[" + _SYMBOL_CHARS + r"][ \t]*"          # × ÷ ≤ ≥ ≠ ± (with
+    r"|[ \t]*[" + _SYMBOL_CHARS + r"][ \t]*"          # × ÷ ≤ ≥ ≠ ± π (with
     r")"                                               # any adjacent spacing,
     # so "x ≤ 5" glues to its neighbors the same way "x + 5" does via the
     # connector token — a bare space alone is never a connector (that
@@ -93,7 +121,7 @@ _TOKEN_RE = re.compile(
     # directly touching one of these symbols is unambiguously part of the
     # same mathematical expression.
     r"|(?P<connector>[ \t]*[+\-=][ \t]*)"
-    r"|(?P<weak>[A-Za-z]+|\d+(?:\.\d+)?)"
+    r"|(?P<weak>[A-Za-z]+|\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
     r"|(?P<other>.)",
     re.S,
 )

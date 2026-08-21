@@ -180,6 +180,61 @@ def test_inequality_and_symbols():
     assert process_text("6 ÷ 7") == r"$6 \div 7$"
 
 
+# -- π and the geometrically-reconstructed inline fraction marker -----------
+
+def test_pi_alone_converted():
+    assert process_text("π") == r"$\pi$"
+
+
+def test_pi_r_squared_h_converted():
+    """The exact shape of the real tank question's 'Volume of a cylinder =
+    πr2h' explanation line, once the genuine superscript has been restored
+    by math_reconstructor.py from PDF geometry (a plain '2' becomes '²')."""
+    assert process_text("πr²h") == r"$\pi r^2h$"
+
+
+def test_reconstructed_frac_marker_wrapped_in_dollars():
+    """math_reconstructor.py inserts a literal '\\frac{a}{b}' marker inline
+    once it has confirmed — from an actual drawn fraction bar — that a
+    split numerator/denominator pair is a real fraction. latex_processor.py
+    must recognize that marker as already-confident math and wrap it in
+    $...$, rather than leaving the bare backslash/braces as literal text."""
+    assert process_text(r"\frac{22}{7}") == r"$\frac{22}{7}$"
+
+
+def test_reconstructed_frac_marker_inside_a_sentence():
+    result = process_text(r"Given \frac{22}{7} is used as pi.")
+    assert r"$\frac{22}{7}$" in result
+    assert "Given" in result and "is used as pi." in result
+
+
+def test_parenthesized_numeric_exponent_converted():
+    """(3.5)² — a geometrically-confirmed exponent right after a
+    parenthesized numeric base — converts as one unit, including the
+    opening parenthesis, rather than leaving it dangling outside $...$."""
+    assert process_text("(3.5)²") == r"$(3.5)^2$"
+
+
+def test_comma_grouped_number_never_split_by_a_dollar_sign():
+    """A regression guard for the same class of bug as the trailing-slash-
+    fraction fix: a thousands-comma number adjacent to a strong math signal
+    must never be cut in half by the closing $ (e.g. '$308 \\times 1000 =
+    308$,000' splitting a single number)."""
+    result = process_text("Capacity = 308 × 1000 = 308,000 litres")
+    assert "$,000" not in result
+    assert r"$308 \times 1000 = 308,000$" in result
+
+
+# -- Normal text / dates / question numbers stay completely unchanged -------
+
+def test_question_number_line_unchanged():
+    assert process_text("Question 22") == "Question 22"
+
+
+def test_date_unchanged():
+    assert process_text("12/25/2024") == "12/25/2024"
+
+
 # -- None / empty safety ------------------------------------------------------
 
 def test_none_and_empty_pass_through():
