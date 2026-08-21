@@ -28,9 +28,10 @@ from parser import parse_paper
 from validator import validate_document
 from review_state import PaperState
 
+from conftest import SSC_PDF  # single source of truth — templates/sample_input.pdf
+
 ROOT = Path(__file__).resolve().parent.parent
 APP_PATH = str(ROOT / "app.py")
-SSC_PDF = str(ROOT / "SSC Stenographer MTP-2.pdf")
 AFCAT_PDF = str(ROOT / "templates" / "AFCAT_Mock_1-5_SP_2026_Final_File.pdf")
 
 

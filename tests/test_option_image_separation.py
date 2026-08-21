@@ -25,6 +25,7 @@ from image_extractor import build_artifact
 from image_locator import locate_image_regions
 from review_state import PaperState
 from paper_segmenter import PaperSpan
+from conftest import SSC_PDF  # single source of truth — templates/sample_input.pdf
 
 FIXTURE = str(Path(__file__).resolve().parent / "fixtures" / "synthetic_option_layouts.pdf")
 
@@ -87,7 +88,7 @@ def test_horizontal_row_still_produces_four_separate_crops_real_pdf():
     """Real-PDF regression (not synthetic): SSC Q5's horizontal row of 4
     option images must still split cleanly — this is the case Fix 1 must
     NOT break while fixing the grid case."""
-    doc = fitz.open("SSC Stenographer MTP-2.pdf")
+    doc = fitz.open(SSC_PDF)
     try:
         page = doc[0]
         candidates = {c.destination: c for c in locate_image_regions(page, 5, 6)}
@@ -270,7 +271,7 @@ def test_question_level_detection_unaffected_by_option_fix():
     """Explicit smoke check tying Fix 1's changes back to the already-
     validated question-only detection path (full suite also re-verifies
     this via test_image_locator.py, kept here as a direct assertion)."""
-    doc = fitz.open("SSC Stenographer MTP-2.pdf")
+    doc = fitz.open(SSC_PDF)
     try:
         page = doc[0]
         candidates = locate_image_regions(page, 5, 6)

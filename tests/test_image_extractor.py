@@ -14,9 +14,8 @@ from PIL import Image
 
 from image_locator import RegionCandidate, locate_image_regions
 from image_extractor import build_artifact, compute_sha256, hash_and_type_for_upload, render_region
+from conftest import SSC_PDF  # single source of truth — templates/sample_input.pdf
 
-ROOT = Path(__file__).resolve().parent.parent
-SSC_PDF = str(ROOT / "SSC Stenographer MTP-2.pdf")
 SYNTHETIC_RASTER_PDF = str(Path(__file__).resolve().parent / "fixtures" / "synthetic_raster.pdf")
 
 

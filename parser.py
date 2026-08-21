@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from extractor import DocumentExtractionResult
 from paper_segmenter import PaperSpan
+from latex_processor import process_question_fields
 
 OPTION_LETTERS = ["A", "B", "C", "D"]
 
@@ -814,6 +815,17 @@ def parse_paper(
         else:
             q["correct_answer"] = ""
             q["explanation"] = ""
+
+    # LaTeX processing (isolated, see latex_processor.py) — converts only
+    # clearly-mathematical substrings of stem/options/explanation into
+    # LaTeX ($...$), leaving ordinary text and every other field (image
+    # data, passage, section, answers, anomaly notes, source page, ...)
+    # untouched. Runs exactly once here, at parse time — parse_paper() is
+    # never re-invoked on a Streamlit rerun (see app.py's module docstring
+    # and "Analyze" flow), so this can never double-process a field or
+    # re-run on text the reviewer has since hand-edited.
+    for q in questions:
+        process_question_fields(q)
 
     return {
         "paper_id": span.paper_id,

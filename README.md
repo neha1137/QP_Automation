@@ -8,8 +8,12 @@ Excel template.
 
 ```bash
 pip install -r requirements.txt
-python3 -m streamlit run app.py
+python3 -m streamlit run app.py --server.port 8080
 ```
+
+The app is configured (via `.streamlit/config.toml`) to default to port
+8080 even without the flag — `streamlit run app.py` and
+`python3 -m streamlit run app.py` both work too.
 
 ## Pipeline
 

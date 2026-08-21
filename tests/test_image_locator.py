@@ -16,9 +16,9 @@ import fitz
 import pytest
 
 from image_locator import locate_image_regions
+from conftest import SSC_PDF  # single source of truth — templates/sample_input.pdf
 
 ROOT = Path(__file__).resolve().parent.parent
-SSC_PDF = str(ROOT / "SSC Stenographer MTP-2.pdf")
 AFCAT_PDF = str(ROOT / "templates" / "AFCAT_Mock_1-5_SP_2026_Final_File.pdf")
 SYNTHETIC_RASTER_PDF = str(Path(__file__).resolve().parent / "fixtures" / "synthetic_raster.pdf")
 

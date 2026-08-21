@@ -29,9 +29,9 @@ import pytest
 from excel_writer import write_excel, TEMPLATE_PATH
 from image_extractor import build_artifact
 from image_locator import locate_image_regions
+from conftest import SSC_PDF  # single source of truth — templates/sample_input.pdf
 
 ROOT = Path(__file__).resolve().parent.parent
-SSC_PDF = str(ROOT / "SSC Stenographer MTP-2.pdf")
 MIXED_FIXTURE = str(Path(__file__).resolve().parent / "fixtures" / "synthetic_stem_visual_mixed.pdf")
 
 
