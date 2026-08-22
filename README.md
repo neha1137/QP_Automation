@@ -90,3 +90,53 @@ DPI (280) and Tesseract config (`--psm 6`, chosen because the default
 automatic page segmentation reorders short left-aligned option lines in
 dense question-paper layouts) are set in `extractor.py`
 (`OCR_RENDER_DPI`, `ocr_config`).
+
+## Image Upload
+
+Detected (or manually uploaded) question images are pushed **one at a
+time** to the Oswaal admin upload API, which stores the file and returns
+its public URL. That URL is written straight into the Excel image
+columns — the app never constructs a URL itself.
+
+```
+PDF region → image_locator → image_extractor (PNG bytes)
+   → api_uploader.upload_image()  ── POST multipart ──►  /api/v1/admin/upload_image
+   ◄── {"status":"uploaded","image_url":"https://..."} ──┘
+   → PaperState.set_image()  →  Excel "Image URL" columns
+```
+
+Uploads are deduplicated by SHA-256 of the image bytes within a session,
+so re-visiting a question or editing an unrelated field never re-uploads
+the same image.
+
+### Configuration
+
+Config lives in `.env` and uses the **same keys as the
+`ai-education-admin` frontend**, so one file serves both projects
+(`src/lib/mockTestApiClient.ts` reads exactly these):
+
+```bash
+VITE_API_BASE_URL=https://stagingaibackend.oswaal360.com
+VITE_X_API_KEY=<x-api-key>
+```
+
+The bearer token is the one thing that cannot carry over: the admin app
+reads it from the `authToken` browser cookie set at login, and Streamlit
+has no such cookie. So provide it one of two ways —
+
+```bash
+# Option A — paste a token (expires; see the JWT's `exp`)
+OSWAAL_API_TOKEN=<bearer token>
+
+# Option B — let it log in automatically via POST /api/v1/login,
+#            the same call the admin Login page makes. Recommended:
+#            the token is minted, cached, and refreshed on expiry.
+OSWAAL_USERNAME=<username>
+OSWAAL_PASSWORD=<password>
+```
+
+Real environment variables override `.env`. See `.env.example`.
+`.env` is gitignored — it holds a live key and must not be committed.
+
+If uploads are unconfigured they fail with a clear message in the UI;
+text extraction and Excel generation still work.

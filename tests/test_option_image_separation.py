@@ -221,36 +221,36 @@ def test_identical_option_images_produce_identical_hashes(fixture_doc):
     assert {art_a.destination, art_b.destination, art_c.destination, art_d.destination} == set(ALL_OPTION_DESTS)
 
 
-def test_identical_option_images_share_s3_url_via_dedup(monkeypatch, fixture_doc):
+def test_identical_option_images_share_url_via_dedup(monkeypatch, fixture_doc):
     """End-to-end: uploading option A then option C (identical bytes)
-    through the real aws_uploader dedup path yields the SAME URL, with
-    only one real PUT — while still being stored as two independent
+    through the real api_uploader dedup path yields the SAME URL, with
+    only one real POST — while still being stored as two independent
     confirmed destinations in PaperState."""
-    import aws_uploader
-    from botocore.exceptions import ClientError
+    import api_uploader
 
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "fake")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fake")
-    monkeypatch.setenv("AWS_REGION", "ap-south-1")
-    monkeypatch.setenv("AWS_S3_BUCKET", "ai-education-s3-public-media")
-    monkeypatch.setenv("AWS_S3_KEY_PREFIX", "mock-tests/images/")
+    monkeypatch.setenv("VITE_API_BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("VITE_X_API_KEY", "fake-api-key")
+    monkeypatch.setenv("OSWAAL_API_TOKEN", "fake-token")
+    api_uploader.reset_token_cache()
 
-    class FakeClient:
-        def __init__(self):
-            self.objects = {}
-            self.put_calls = []
+    posts = []
 
-        def head_object(self, Bucket, Key):
-            if Key not in self.objects:
-                raise ClientError({"Error": {"Code": "404"}}, "HeadObject")
-            return {}
+    def fake_post(url, headers=None, files=None, timeout=None):
+        name = files["image"][0]
+        posts.append(name)
 
-        def put_object(self, Bucket, Key, Body, ContentType):
-            self.put_calls.append(Key)
-            self.objects[Key] = Body
+        class _Resp:
+            status_code = 200
+            text = ""
 
-    fake = FakeClient()
-    monkeypatch.setattr(aws_uploader, "build_client", lambda config: fake)
+            @staticmethod
+            def json():
+                return {"status": "uploaded",
+                        "image_url": f"https://cdn.example.com/{name}"}
+
+        return _Resp()
+
+    monkeypatch.setattr(api_uploader.requests, "post", fake_post)
 
     page = fixture_doc[3]
     candidates = {c.destination: c for c in locate_image_regions(page, 1, 2)}
@@ -258,11 +258,11 @@ def test_identical_option_images_share_s3_url_via_dedup(monkeypatch, fixture_doc
     art_c = build_artifact(page, candidates["option_c"])
 
     cache = {}
-    result_a = aws_uploader.upload_image(art_a.image_bytes, art_a.content_type, cache=cache)
-    result_c = aws_uploader.upload_image(art_c.image_bytes, art_c.content_type, cache=cache)
+    result_a = api_uploader.upload_image(art_a.image_bytes, art_a.content_type, cache=cache)
+    result_c = api_uploader.upload_image(art_c.image_bytes, art_c.content_type, cache=cache)
 
     assert result_a["url"] == result_c["url"]
-    assert len(fake.put_calls) == 1  # only one real upload for the shared bytes
+    assert len(posts) == 1  # only one real upload for the shared bytes
 
 
 # -- 9: existing question-level detection still passes (explicit smoke) ----

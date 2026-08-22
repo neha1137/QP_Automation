@@ -5,4 +5,4 @@ streamlit
 pytesseract
 Pillow
 pytest
-boto3
+requests

@@ -67,6 +67,57 @@ def _seeded_app(pdf_path: str, name: str) -> AppTest:
 # actually in the exported file.
 # ---------------------------------------------------------------------------
 
+
+# ── Fake upload backend ─────────────────────────────────────────────────
+# The image upload path posts to the Oswaal admin API (api_uploader.py),
+# so these UI tests stub `requests.post` rather than an S3 client. The
+# returned URL keeps the exact shape the real backend hands back, so the
+# downstream Excel-column assertions test real behavior, not a fixture.
+class _FakeUploadBackend:
+    """Records every POST so tests can assert dedup (exactly one real
+    upload for repeated identical bytes)."""
+
+    def __init__(self):
+        self.post_calls = []
+
+    @property
+    def put_calls(self):  # name kept so existing assertions read the same
+        return self.post_calls
+
+    def __call__(self, url, headers=None, files=None, timeout=None):
+        name, data, content_type = files["image"]
+        self.post_calls.append((url, name, content_type))
+        ext = "png" if content_type == "image/png" else "jpg"
+
+        class _Resp:
+            status_code = 200
+            text = ""
+
+            @staticmethod
+            def json():
+                return {
+                    "status": "uploaded",
+                    "image_url": (
+                        "https://ai-education-s3-public-media.s3.ap-south-1."
+                        f"amazonaws.com/mock-tests/images/{name.rsplit('.', 1)[0]}.{ext}"
+                    ),
+                }
+
+        return _Resp()
+
+
+def _install_fake_upload(monkeypatch):
+    """Sets the credentials api_uploader requires and swaps the network
+    call for an in-process fake. Returns the fake, for call assertions."""
+    monkeypatch.setenv("VITE_X_API_KEY", "fake-api-key")
+    monkeypatch.setenv("OSWAAL_API_TOKEN", "fake-token")
+    import api_uploader
+    api_uploader.reset_token_cache()
+    fake = _FakeUploadBackend()
+    monkeypatch.setattr(api_uploader.requests, "post", fake)
+    return fake
+
+
 def test_ui_edit_save_generate_roundtrip(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "templates").symlink_to(ROOT / "templates")
@@ -321,31 +372,7 @@ def test_ui_reset_all_edits_with_confirmation(tmp_path, monkeypatch):
 def test_ui_image_question_auto_detect_confirm_uploads_and_reaches_excel(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "templates").symlink_to(ROOT / "templates")
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "fake-key")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fake-secret")
-    monkeypatch.setenv("AWS_REGION", "ap-south-1")
-    monkeypatch.setenv("AWS_S3_BUCKET", "ai-education-s3-public-media")
-    monkeypatch.setenv("AWS_S3_KEY_PREFIX", "mock-tests/images/")
-
-    import aws_uploader
-    from botocore.exceptions import ClientError
-
-    class FakeS3Client:
-        def __init__(self):
-            self.objects = {}
-            self.put_calls = []
-
-        def head_object(self, Bucket, Key):
-            if Key not in self.objects:
-                raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
-            return {}
-
-        def put_object(self, Bucket, Key, Body, ContentType):
-            self.put_calls.append((Bucket, Key, ContentType))
-            self.objects[Key] = Body
-
-    fake_client = FakeS3Client()
-    monkeypatch.setattr(aws_uploader, "build_client", lambda config: fake_client)
+    fake_client = _install_fake_upload(monkeypatch)
 
     doc, states = _build_paper_states(SSC_PDF)
     at = AppTest.from_file(APP_PATH, default_timeout=60)
@@ -396,6 +423,47 @@ def test_ui_image_question_auto_detect_confirm_uploads_and_reaches_excel(tmp_pat
 
 
 # ---------------------------------------------------------------------------
+# Image URL summary panel — answers "did the detected image actually get a
+# public URL?" for the whole paper without opening each question.
+# ---------------------------------------------------------------------------
+
+def test_image_url_summary_lists_generated_url(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "templates").symlink_to(ROOT / "templates")
+    _install_fake_upload(monkeypatch)
+
+    doc, states = _build_paper_states(SSC_PDF)
+    at = AppTest.from_file(APP_PATH, default_timeout=60)
+    at.session_state["analyzed"] = True
+    at.session_state["doc_result"] = doc
+    at.session_state["paper_states"] = states
+    at.session_state["uploaded_name"] = "SSC.pdf"
+    at.session_state["uploaded_key"] = ("SSC.pdf", 1)
+    at.session_state["pdf_bytes"] = Path(SSC_PDF).read_bytes()
+    at.run()
+    assert not at.exception
+
+    ps = at.session_state["paper_states"][0]
+
+    # Before confirming anything: the panel must say zero, NOT show a URL —
+    # detection alone never uploads.
+    assert any("0 generated" in str(e.label) for e in at.expander), \
+        "summary should report 0 generated before any confirmation"
+
+    at.selectbox(key="qselect_1").select(5).run()
+    at.button(key="usedet_1_5_0").click().run()
+    assert not at.exception
+
+    url = [im for im in ps.get_images(5) if im["destination"] == "question"][0]["image_url"]
+
+    # After confirming: the panel reports one URL, and it is the real one
+    # that will reach Excel.
+    assert any("1 generated" in str(e.label) for e in at.expander)
+    assert any(url in str(df.value.to_dict()) for df in at.dataframe), \
+        "the generated URL should be listed in the summary panel"
+
+
+# ---------------------------------------------------------------------------
 # TEST 9 (V3) — ZIP export preserves each paper's own confirmed image URL,
 # with no cross-paper bleed, through the real "GENERATE ALL (ZIP)" button.
 # ---------------------------------------------------------------------------
@@ -403,28 +471,7 @@ def test_ui_image_question_auto_detect_confirm_uploads_and_reaches_excel(tmp_pat
 def test_ui_zip_export_preserves_per_paper_image_urls(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "templates").symlink_to(ROOT / "templates")
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "fake-key")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fake-secret")
-    monkeypatch.setenv("AWS_REGION", "ap-south-1")
-    monkeypatch.setenv("AWS_S3_BUCKET", "ai-education-s3-public-media")
-    monkeypatch.setenv("AWS_S3_KEY_PREFIX", "mock-tests/images/")
-
-    import aws_uploader
-    from botocore.exceptions import ClientError
-
-    class FakeS3Client:
-        def __init__(self):
-            self.objects = {}
-
-        def head_object(self, Bucket, Key):
-            if Key not in self.objects:
-                raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
-            return {}
-
-        def put_object(self, Bucket, Key, Body, ContentType):
-            self.objects[Key] = Body
-
-    monkeypatch.setattr(aws_uploader, "build_client", lambda config: FakeS3Client())
+    _install_fake_upload(monkeypatch)
 
     doc, states = _build_paper_states(AFCAT_PDF)
     at = AppTest.from_file(APP_PATH, default_timeout=60)
@@ -494,31 +541,7 @@ def test_ui_zip_export_preserves_per_paper_image_urls(tmp_path, monkeypatch):
 def test_ui_q50_stem_visual_detected_without_is_image_flag(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "templates").symlink_to(ROOT / "templates")
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "fake-key")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fake-secret")
-    monkeypatch.setenv("AWS_REGION", "ap-south-1")
-    monkeypatch.setenv("AWS_S3_BUCKET", "ai-education-s3-public-media")
-    monkeypatch.setenv("AWS_S3_KEY_PREFIX", "mock-tests/images/")
-
-    import aws_uploader
-    from botocore.exceptions import ClientError
-
-    class FakeS3Client:
-        def __init__(self):
-            self.objects = {}
-            self.put_calls = []
-
-        def head_object(self, Bucket, Key):
-            if Key not in self.objects:
-                raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
-            return {}
-
-        def put_object(self, Bucket, Key, Body, ContentType):
-            self.put_calls.append((Bucket, Key, ContentType))
-            self.objects[Key] = Body
-
-    fake_client = FakeS3Client()
-    monkeypatch.setattr(aws_uploader, "build_client", lambda config: fake_client)
+    fake_client = _install_fake_upload(monkeypatch)
 
     doc, states = _build_paper_states(SSC_PDF)
     at = AppTest.from_file(APP_PATH, default_timeout=60)

@@ -37,7 +37,7 @@ from parser import parse_paper
 from validator import validate_document
 from excel_writer import write_excel, build_marking_scheme, TEMPLATE_PATH, QUESTION_TYPE_OPTIONS
 from review_state import PaperState, compute_blocking_errors
-import aws_uploader
+import api_uploader
 from image_locator import locate_image_regions
 from image_extractor import build_artifact, hash_and_type_for_upload
 
@@ -84,13 +84,13 @@ st.caption("Upload a mock test PDF, review/correct anything the parser flagged, 
 # (bypassing the normal is_image/detected-candidate gating entirely) and
 # renders every candidate's full detail for the CURRENTLY selected
 # question, independent of whether the normal review UI would show
-# anything. Never uploads anything on its own — S3 status is a read-only
+# anything. Never uploads anything on its own — upload status is a read-only
 # credential-presence check, never a real network call.
 st.sidebar.markdown("### 🔧 Debug")
 st.session_state.setdefault("debug_image_detection", False)
 st.session_state["debug_image_detection"] = st.sidebar.checkbox(
     "Debug: Image Detection", value=st.session_state["debug_image_detection"],
-    help="Shows raw image_locator/image_extractor output for the currently selected question — bbox, confidence, rendered preview, hash, S3 status.",
+    help="Shows raw image_locator/image_extractor output for the currently selected question — bbox, confidence, rendered preview, hash, upload status.",
 )
 
 
@@ -312,7 +312,7 @@ def _confirm_and_upload(ps: PaperState, number: int, destination: str, image_byt
     upload (dedup-cached) then store as the CONFIRMED image for this
     destination via PaperState.set_image(), which always replaces any
     prior image for that same destination (never two competing URLs)."""
-    result = aws_uploader.upload_image(
+    result = api_uploader.upload_image(
         image_bytes, content_type, cache=st.session_state["image_upload_cache"],
     )
     artifact = {
@@ -404,7 +404,7 @@ def _render_image_section(ps: PaperState, pid: int, number: int, q: dict):
                         reason=cand.get("reason", ""),
                     )
                     if result["status"] == "uploaded":
-                        st.success(f"✓ Uploaded to S3 — {IMAGE_DEST_LABELS[chosen_dest]}")
+                        st.success(f"✓ Uploaded — URL generated for {IMAGE_DEST_LABELS[chosen_dest]}")
                     else:
                         st.error(f"✗ Upload failed: {result['error']}")
                     st.rerun()
@@ -425,7 +425,14 @@ def _render_image_section(ps: PaperState, pid: int, number: int, q: dict):
                 continue
             label = IMAGE_DEST_LABELS.get(dest, dest)
             if im.get("status") == "uploaded":
-                st.success(f"✓ {label}: {im['image_url']}")
+                st.success(f"✓ {label} — public URL generated")
+                # Read-only text_input rather than st.success text: a long
+                # URL is selectable/copyable here, and doesn't wrap into an
+                # unreadable block inside a colored callout.
+                st.text_input(
+                    f"{label} image URL", value=im["image_url"], disabled=True,
+                    key=f"confirmedurl_{pid}_{number}_{dest}",
+                )
             else:
                 st.error(f"✗ {label}: upload failed — {im.get('error')}")
 
@@ -433,12 +440,12 @@ def _render_image_section(ps: PaperState, pid: int, number: int, q: dict):
 # ── TEMPORARY — DEBUG IMAGE DETECTION renderer ──────────────────────────
 def _render_debug_image_detection(ps: PaperState, pid: int, number: int, q: dict):
     """Raw PDF -> image_locator -> image_extractor -> PNG bytes -> preview,
-    stopping there — never calls aws_uploader.upload_image(). Runs
+    stopping there — never calls api_uploader.upload_image(). Runs
     unconditionally for whichever question is currently selected,
     completely independent of the normal is_image/detected-candidate
     gating in the review panel above, so it can show exactly what
     detection does (or doesn't) find even when the normal UI shows
-    nothing. Safe with zero AWS configuration: "S3 status" below is only
+    nothing. Safe with zero upload configuration: "Upload status" below is only
     ever a read-only check of whether credentials are present, never a
     real upload attempt."""
     with st.expander(f"🔧 DEBUG: Image Detection — Q{number}", expanded=True):
@@ -499,17 +506,17 @@ def _render_debug_image_detection(ps: PaperState, pid: int, number: int, q: dict
             st.write(f"**confirmed:** {'yes' if is_confirmed else 'no'}")
 
             if confirmed and confirmed.get("status") == "uploaded":
-                st.write("**S3 status:** ✓ Uploaded")
+                st.write("**Upload status:** ✓ Uploaded")
                 st.write(f"**image_url:** {confirmed['image_url']}")
             elif confirmed and confirmed.get("status") == "failed":
-                st.write(f"**S3 status:** ✗ Failed — {confirmed.get('error')}")
+                st.write(f"**Upload status:** ✗ Failed — {confirmed.get('error')}")
             else:
                 try:
-                    aws_uploader.get_config()
-                    st.write("**S3 status:** configured (not uploaded from this debug view — "
+                    api_uploader.get_config()
+                    st.write("**Upload status:** configured (not uploaded from this debug view — "
                               "use \"Use Detected Image\" above to actually upload)")
-                except aws_uploader.MissingAWSConfigError:
-                    st.write("**S3 status:** Not configured")
+                except api_uploader.MissingAPIConfigError:
+                    st.write("**Upload status:** Not configured")
 
             ext = "png" if cand["content_type"] == "image/png" else "jpg"
             st.download_button(
@@ -518,6 +525,58 @@ def _render_debug_image_detection(ps: PaperState, pid: int, number: int, q: dict
                 file_name=f"debug_q{number}_{dest}.{ext}",
                 mime=cand["content_type"],
                 key=f"debugdl_{pid}_{number}_{idx}",
+            )
+
+
+def _render_image_url_summary(ps: PaperState, pid: int):
+    """Every confirmed image in this paper and the public URL it produced.
+
+    Only reads PaperState (the confirmed store excel_writer.py also reads),
+    so what this panel shows is exactly what will land in the Excel image
+    columns — never an unconfirmed detection candidate."""
+    rows = []
+    for n in ps.question_order:
+        for im in ps.get_images(n):
+            rows.append((n, im))
+
+    uploaded = [(n, im) for n, im in rows if im.get("status") == "uploaded" and im.get("image_url")]
+    failed = [(n, im) for n, im in rows if im.get("status") != "uploaded"]
+
+    if not rows:
+        with st.expander("🖼 Image URLs (0 generated)", expanded=False):
+            st.info(
+                "No image URLs yet. Detecting an image does NOT upload it — open a "
+                "question with an image, then click **✓ Use Detected Image** (or upload "
+                "one manually) to generate its public URL."
+            )
+        return
+
+    label = f"🖼 Image URLs — {len(uploaded)} generated"
+    if failed:
+        label += f", {len(failed)} failed"
+
+    with st.expander(label, expanded=bool(failed)):
+        if failed:
+            st.error(f"{len(failed)} image(s) failed to upload — these will be BLANK in the Excel.")
+            for n, im in failed:
+                dest_label = IMAGE_DEST_LABELS.get(im.get("destination"), im.get("destination"))
+                st.write(f"**Q{n}** · {dest_label} — {im.get('error') or 'unknown error'}")
+            st.markdown("---")
+
+        if uploaded:
+            st.caption(
+                "These exact URLs are what gets written into the Excel image columns."
+            )
+            st.dataframe(
+                pd.DataFrame([
+                    {
+                        "Q": n,
+                        "Destination": IMAGE_DEST_LABELS.get(im.get("destination"), im.get("destination")),
+                        "Image URL": im["image_url"],
+                    }
+                    for n, im in uploaded
+                ]),
+                width="stretch", hide_index=True,
             )
 
 
@@ -701,6 +760,13 @@ with st.container(border=True):
                     st.markdown(f"**Q{n}** {badges}<br><span style='color:#666'>⚠ {flags}</span>", unsafe_allow_html=True)
                 with c2:
                     st.button("Review / Edit", key=f"needsreview_jump_{pid}_{n}", on_click=_jump_to_question, args=(pid, n))
+
+    # ── Image URL summary ────────────────────────────────────────────────
+    # Answers "did the detected image actually get a public URL?" for the
+    # whole paper at once. Without this the only place a URL appears is
+    # inside one question's review panel, so confirming 40 images meant
+    # clicking into 40 questions to verify any of them worked.
+    _render_image_url_summary(active_ps, pid)
 
     # ── Search / navigate ────────────────────────────────────────────────
     st.markdown('<div class="qb-section-label">Review &amp; Edit Questions</div>', unsafe_allow_html=True)
